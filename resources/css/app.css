@@ -1,0 +1,12 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+*{box-sizing:border-box}
+html{color-scheme:light}
+html.dark{color-scheme:dark}
+body{margin:0;min-width:320px;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Arial,sans-serif;background:#f1f5f9;color:#0f172a;-webkit-font-smoothing:antialiased}
+html.dark body{background:#020617;color:#e2e8f0}
+button,input,select{font:inherit}
+button{cursor:pointer}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}
+html.dark ::-webkit-scrollbar-thumb{background:#334155}

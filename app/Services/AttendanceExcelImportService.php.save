@@ -1,0 +1,591 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Employee;
+use App\Models\EmployeeAttendance;
+use DateTime;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
+use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
+use Throwable;
+
+class AttendanceExcelImportService
+{
+    public function import(string $filePath): array
+    {
+        $spreadsheet = IOFactory::load($filePath);
+
+        $result = [
+            'employees' => 0,
+            'attendance' => 0,
+            'skipped' => 0,
+            'sheets' => 0,
+            'errors' => [],
+        ];
+
+        foreach ($spreadsheet->getWorksheetIterator() as $sheet) {
+            $result['sheets']++;
+
+            try {
+                if ($this->looksLikeHorizontalAttendance($sheet)) {
+                    $this->importHorizontalSheet($sheet, $result);
+                } else {
+                    $this->importVerticalSheet($sheet, $result);
+                }
+            } catch (Throwable $e) {
+                $result['errors'][] = [
+                    'sheet' => $sheet->getTitle(),
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return $result;
+    }
+
+    private function looksLikeHorizontalAttendance(Worksheet $sheet): bool
+{
+    $rows = $sheet->toArray(null, true, true, true);
+
+    // Periksa maksimal 20 baris pertama.
+    $maxRows = min(20, count($rows));
+
+    for ($r = 1; $r <= $maxRows; $r++) {
+        $currentRow = $rows[$r] ?? [];
+
+        $hasTgl = false;
+        $hasTanggal = false;
+        $hasNama = false;
+
+        foreach ($currentRow as $value) {
+            $text = $this->normalizeText($value);
+
+            if ($text === 'tgl') {
+                $hasTgl = true;
+            }
+
+            if ($text === 'tanggal') {
+                $hasTanggal = true;
+            }
+
+            if (
+                $text === 'nama' ||
+                $text === 'name' ||
+                $text === 'karyawan' ||
+                $text === 'employee'
+            ) {
+                $hasNama = true;
+            }
+        }
+
+        /*
+         * Contoh format Excel kamu:
+         *
+         * Baris 3:
+         * TGL | NAMA
+         *
+         * Baris 4:
+         * AGUSTUS | TRI SUPARTMAN | DENI | JUL | RUSTAM
+         *
+         * Baris 5:
+         * 2026 | IN | OUT | IN | OUT | IN | OUT
+         */
+
+        if ($hasTgl || $hasTanggal || $hasNama) {
+
+            // Cari IN/OUT dalam maksimal 5 baris berikutnya.
+            $nextMax = min($r + 5, $maxRows);
+
+            for ($next = $r + 1; $next <= $nextMax; $next++) {
+                $nextRow = $rows[$next] ?? [];
+
+                $inCount = 0;
+                $outCount = 0;
+
+                foreach ($nextRow as $value) {
+                    $text = $this->normalizeText($value);
+
+                    if ($text === 'in') {
+                        $inCount++;
+                    }
+
+                    if ($text === 'out') {
+                        $outCount++;
+                    }
+                }
+
+                // Minimal ada 1 IN dan 1 OUT.
+                if ($inCount >= 1 && $outCount >= 1) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+           $status = $this->detectStatus(
+                    $timeIn,
+                    $timeOut,
+                    $note
+                );
+
+                $employeeModel = $this->findOrCreateEmployee($name);
+
+                if ($employeeModel->wasRecentlyCreated) {
+                    $result['employees']++;
+                }
+
+                EmployeeAttendance::updateOrCreate(
+                    [
+                        'employee_id' => $employeeModel->id,
+                        'date' => $date,
+                    ],
+                    [
+                        'time_in' => $timeIn,
+                        'time_out' => $timeOut,
+                        'status' => $status,
+                        'note' => $note,
+                    ]
+                );
+
+                $result['attendance']++;
+            }
+        }
+    }
+
+    private function importVerticalSheet(
+        Worksheet $sheet,
+        array &$result
+    ): void {
+        $rows = $sheet->toArray(null, true, true, true);
+
+        if (count($rows) < 2) {
+            $result['skipped']++;
+            return;
+        }
+
+        $headerRowNumber = null;
+        $headers = [];
+
+        foreach (array_slice($rows, 0, 20, true) as $rowNumber => $row) {
+            $candidate = [];
+
+            foreach ($row as $column => $value) {
+                $text = $this->normalizeHeader($value);
+
+                if ($text !== '') {
+                    $candidate[$column] = $text;
+                }
+            }
+
+            $headerText = implode('|', array_values($candidate));
+
+            $hasDate =
+                str_contains($headerText, 'tanggal') ||
+                str_contains($headerText, 'date');
+
+            $hasName =
+                str_contains($headerText, 'nama') ||
+                str_contains($headerText, 'name') ||
+                str_contains($headerText, 'karyawan');
+
+            $hasTime =
+                str_contains($headerText, 'masuk') ||
+                str_contains($headerText, 'checkin') ||
+                str_contains($headerText, 'in');
+
+            if ($hasDate && $hasName && $hasTime) {
+                $headerRowNumber = $rowNumber;
+                $headers = $candidate;
+                break;
+            }
+        }
+
+        if ($headerRowNumber === null) {
+            $result['skipped']++;
+            return;
+        }
+
+        $columnMap = [
+            'date' => null,
+            'employee_id' => null,
+            'name' => null,
+            'dept' => null,
+            'time_in' => null,
+            'time_out' => null,
+            'status' => null,
+            'note' => null,
+        ];
+
+        foreach ($headers as $column => $header) {
+            if (
+                in_array($header, ['tanggal', 'date', 'tgl'], true)
+            ) {
+                $columnMap['date'] = $column;
+            } elseif (
+                in_array($header, ['id', 'employeeid', 'idkaryawan', 'kodekaryawan'], true)
+            ) {
+                $columnMap['employee_id'] = $column;
+            } elseif (
+                in_array($header, ['nama', 'name', 'namakaryawan', 'karyawan'], true)
+            ) {
+                $columnMap['name'] = $column;
+            } elseif (
+                in_array($header, ['dept', 'departemen', 'department', 'jabatan'], true)
+            ) {
+                $columnMap['dept'] = $column;
+            } elseif (
+                in_array($header, ['masuk', 'jamasuk', 'checkin', 'timein', 'in'], true)
+            ) {
+                $columnMap['time_in'] = $column;
+            } elseif (
+                in_array($header, ['pulang', 'jamkeluar', 'checkout', 'timeout', 'out'], true)
+            ) {
+                $columnMap['time_out'] = $column;
+            } elseif ($header === 'status') {
+                $columnMap['status'] = $column;
+            } elseif (
+                in_array($header, ['keterangan', 'catatan', 'note', 'remarks'], true)
+            ) {
+                $columnMap['note'] = $column;
+            }
+        }
+
+        if ($columnMap['date'] === null || $columnMap['name'] === null) {
+            $result['skipped']++;
+            return;
+        }
+
+        foreach ($rows as $rowNumber => $row) {
+            if ($rowNumber <= $headerRowNumber) {
+                continue;
+            }
+
+            $name = trim((string) ($row[$columnMap['name']] ?? ''));
+
+            if ($name === '') {
+                continue;
+            }
+
+            $date = $this->parseDate($row[$columnMap['date']] ?? null);
+
+            if ($date === null) {
+                continue;
+            }
+
+            $employeeId = $columnMap['employee_id'] !== null
+                ? trim((string) ($row[$columnMap['employee_id']] ?? ''))
+                : null;
+
+            $dept = $columnMap['dept'] !== null
+                ? trim((string) ($row[$columnMap['dept']] ?? ''))
+                : null;
+
+            $timeIn = $columnMap['time_in'] !== null
+                ? $this->parseTime($row[$columnMap['time_in']] ?? null)
+                : null;
+
+            $timeOut = $columnMap['time_out'] !== null
+                ? $this->parseTime($row[$columnMap['time_out']] ?? null)
+                : null;
+
+            $status = $columnMap['status'] !== null
+                ? $this->normalizeStatus($row[$columnMap['status']] ?? null)
+                : $this->detectStatus(
+                    $timeIn,
+                    $timeOut,
+                    $columnMap['note'] !== null
+                        ? ($row[$columnMap['note']] ?? null)
+                        : null
+                );
+
+            $note = $columnMap['note'] !== null
+                ? trim((string) ($row[$columnMap['note']] ?? ''))
+                : null;
+
+            $employee = $this->findOrCreateEmployee(
+                $name,
+                $employeeId,
+                $dept
+            );
+
+            if ($employee->wasRecentlyCreated) {
+                $result['employees']++;
+            }
+
+            EmployeeAttendance::updateOrCreate(
+                [
+                    'employee_id' => $employee->id,
+                    'date' => $date,
+                ],
+                [
+                    'time_in' => $timeIn,
+                    'time_out' => $timeOut,
+                    'status' => $status,
+                    'note' => $note !== '' ? $note : null,
+                ]
+            );
+
+            $result['attendance']++;
+        }
+    }
+
+    private function findOrCreateEmployee(
+        string $name,
+        ?string $employeeId = null,
+        ?string $dept = null
+    ): Employee {
+        $name = trim($name);
+
+        if ($employeeId !== null && $employeeId !== '') {
+            return Employee::firstOrCreate(
+                ['employee_id' => $employeeId],
+                [
+                    'name' => $name,
+                    'dept' => $dept,
+                    'status' => 'belum-absen',
+                    'deduction' => 0,
+                    'avatar' => $this->avatar($name),
+                ]
+            );
+        }
+
+        $generatedId = 'EMP-' . strtoupper(
+            substr(sha1(mb_strtolower($name)), 0, 8)
+        );
+
+        return Employee::firstOrCreate(
+            ['employee_id' => $generatedId],
+            [
+                'name' => $name,
+                'dept' => $dept,
+                'status' => 'belum-absen',
+                'deduction' => 0,
+                'avatar' => $this->avatar($name),
+            ]
+        );
+    }
+
+    private function parseTime(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            $number = (float) $value;
+
+            // Nilai waktu Excel: pecahan dari 1 hari.
+            if ($number >= 0 && $number < 1) {
+                $dateTime = ExcelDate::excelToDateTimeObject($number);
+
+                return $dateTime->format('H:i:s');
+            }
+        }
+
+        $text = trim((string) $value);
+
+        $text = str_replace('.', ':', $text);
+
+        foreach (['H:i:s', 'H:i'] as $format) {
+            $date = DateTime::createFromFormat($format, $text);
+
+            if ($date !== false) {
+                return $date->format('H:i:s');
+            }
+        }
+
+        return null;
+    }
+
+    private function parseDate(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            try {
+                return ExcelDate::excelToDateTimeObject($value)->format('Y-m-d');
+            } catch (Throwable) {
+                return null;
+            }
+        }
+
+        $text = trim((string) $value);
+
+        foreach (
+            ['Y-m-d', 'd/m/Y', 'd-m-Y', 'd.m.Y', 'd/m/y', 'd-m-y']
+            as $format
+        ) {
+            $date = DateTime::createFromFormat($format, $text);
+
+            if ($date !== false) {
+                return $date->format('Y-m-d');
+            }
+        }
+
+        return null;
+    }
+
+    private function extractDay(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $text = trim((string) $value);
+
+        if (preg_match('/^\d{1,2}$/', $text)) {
+            return (int) $text;
+        }
+
+        $date = $this->parseDate($value);
+
+        return $date
+            ? (int) date('d', strtotime($date))
+            : null;
+    }
+
+    private function detectStatus(
+        ?string $timeIn,
+        ?string $timeOut,
+        mixed $note = null
+    ): string {
+        $noteText = $this->normalizeText($note);
+
+        if (
+            str_contains($noteText, 'izin') ||
+            str_contains($noteText, 'ijin')
+        ) {
+            return 'izin';
+        }
+
+        if (str_contains($noteText, 'sakit')) {
+            return 'sakit';
+        }
+
+        if ($timeIn === null && $timeOut === null) {
+            return 'tidak-hadir';
+        }
+
+        if ($timeIn !== null) {
+            return $this->timeToMinutes($timeIn) > (8 * 60)
+                ? 'telat'
+                : 'hadir';
+        }
+
+        return 'hadir';
+    }
+
+    private function normalizeStatus(mixed $value): string
+    {
+        $text = $this->normalizeText($value);
+
+        return match (true) {
+            str_contains($text, 'telat'),
+            str_contains($text, 'terlambat') => 'telat',
+
+            str_contains($text, 'izin'),
+            str_contains($text, 'ijin') => 'izin',
+
+            str_contains($text, 'sakit') => 'sakit',
+
+            str_contains($text, 'alpa'),
+            str_contains($text, 'tidak hadir'),
+            str_contains($text, 'absen') => 'tidak-hadir',
+
+            default => 'hadir',
+        };
+    }
+
+    private function normalizeHeader(mixed $value): string
+    {
+        $text = $this->normalizeText($value);
+
+        return str_replace(
+            [' ', '-', '/', '.', '(', ')'],
+            '',
+            $text
+        );
+    }
+
+    private function normalizeText(mixed $value): string
+    {
+        return mb_strtolower(trim((string) ($value ?? '')));
+    }
+
+    private function monthNumber(string $value): ?int
+    {
+        return match ($value) {
+            'januari', 'january', 'jan' => 1,
+            'februari', 'february', 'feb' => 2,
+            'maret', 'march', 'mar' => 3,
+            'april', 'apr' => 4,
+            'mei', 'may' => 5,
+            'juni', 'june', 'jun' => 6,
+            'juli', 'july', 'jul' => 7,
+            'agustus', 'august', 'aug' => 8,
+            'september', 'sep' => 9,
+            'oktober', 'october', 'oct' => 10,
+            'november', 'nov' => 11,
+            'desember', 'december', 'dec' => 12,
+            default => null,
+        };
+    }
+
+    private function isNoiseName(string $name): bool
+    {
+        $text = $this->normalizeText($name);
+
+        return in_array($text, [
+            'nama',
+            'tgl',
+            'tanggal',
+            'date',
+            'in',
+            'out',
+        ], true);
+    }
+
+    private function avatar(string $name): string
+    {
+        $parts = preg_split('/\s+/', trim($name));
+
+        if (!$parts) {
+            return '?';
+        }
+
+        $first = strtoupper(substr($parts[0], 0, 1));
+        $last = count($parts) > 1
+            ? strtoupper(substr($parts[count($parts) - 1], 0, 1))
+            : '';
+
+        return $first . $last;
+    }
+
+    private function timeToMinutes(string $time): int
+    {
+        [$hour, $minute] = array_map(
+            'intval',
+            explode(':', $time)
+        );
+
+        return ($hour * 60) + $minute;
+    }
+
+    private function columnNumber(string $column): int
+    {
+        $number = 0;
+
+        for ($i = 0; $i < strlen($column); $i++) {
+            $number = ($number * 26)
+                + (ord(strtoupper($column[$i])) - 64);
+        }
+
+        return $number;
+    }
+}

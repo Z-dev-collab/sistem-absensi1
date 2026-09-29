@@ -1,0 +1,86 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+    --color-background: #F0F4FF;
+    --color-foreground: #0F1729;
+    --color-card: #FFFFFF;
+    --color-card-foreground: #0F1729;
+    --color-primary: #1D4ED8;
+    --color-primary-foreground: #FFFFFF;
+    --color-secondary: #EFF6FF;
+    --color-secondary-foreground: #1E3A8A;
+    --color-muted: #DBEAFE;
+    --color-muted-foreground: #6B7280;
+    --color-accent: #EA580C;
+    --color-accent-foreground: #FFFFFF;
+    --color-success: #16A34A;
+    --color-success-foreground: #FFFFFF;
+    --color-danger: #DC2626;
+    --color-danger-foreground: #FFFFFF;
+    --color-border: #E2E8F0;
+    --color-ring: #93C5FD;
+    --radius: 14px;
+
+    --font-sans:
+        -apple-system,
+        BlinkMacSystemFont,
+        "SF Pro Display",
+        "SF Pro Text",
+        "Helvetica Neue",
+        Arial,
+        sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    min-height: 100%;
+    margin: 0;
+}
+
+body {
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "SF Pro Display",
+        "SF Pro Text",
+        "Helvetica Neue",
+        Arial,
+        sans-serif;
+
+    background: #F0F4FF;
+    color: #0F1729;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    transition: background-color 180ms ease, color 180ms ease;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+    background: #475569;
+    background-clip: padding-box;
+}
