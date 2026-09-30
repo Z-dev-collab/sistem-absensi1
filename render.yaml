@@ -1,0 +1,14 @@
+# Render deployment config
+# See https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: sistem-absensi
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: false

@@ -14,7 +14,8 @@
 /.zed
 /auth.json
 /node_modules
-/public/build
+# Build artifacts ARE needed for Render (built inside Docker)
+# /public/build
 /public/fonts-manifest.dev.json
 /public/hot
 /public/storage

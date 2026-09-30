@@ -84,3 +84,28 @@ select {
     background: #475569;
     background-clip: padding-box;
 }
+
+
+/* ---------------- Cetak / Print Rekap ---------------- */
+.print-area { color:#000; background:#fff; }
+.rekap-card { margin-bottom:26px; }
+.rekap-title { font-size:19px; font-weight:800; text-align:center; letter-spacing:.4px; }
+.rekap-sub { font-size:13px; font-weight:600; text-align:center; margin:2px 0 10px; }
+.rekap-meta { display:flex; flex-wrap:wrap; gap:4px 28px; font-size:12px; margin-bottom:8px; }
+.rekap-table { width:100%; border-collapse:collapse; font-size:12px; }
+.rekap-table th, .rekap-table td { border:1px solid #444; padding:4px 6px; text-align:left; }
+.rekap-table thead th { background:#e5e7eb; font-weight:700; }
+.rekap-table tfoot td { font-weight:700; background:#f3f4f6; }
+.rekap-sign { display:flex; justify-content:space-between; margin-top:34px; font-size:12px; }
+.rekap-line { border-top:1px solid #000; margin-top:52px; padding-top:4px; min-width:190px; text-align:center; }
+
+@media print {
+  @page { size: A4 portrait; margin: 12mm; }
+  aside, header, .no-print { display: none !important; }
+  html, body, #root { background: #fff !important; }
+  body, .print-area, .print-area * { color:#000 !important; background:transparent !important; }
+  .rekap-table thead th, .rekap-table tfoot td { background:#e5e7eb !important; }
+  .rekap-card { break-inside: avoid; page-break-inside: avoid; }
+  .page-break { break-after: page; page-break-after: always; }
+  .page-break:last-child { break-after: auto; page-break-after: auto; }
+}
