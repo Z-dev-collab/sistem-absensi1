@@ -30,3 +30,8 @@ Sistem-Absensi-main/
 build-run.mjs
 .env.infinityfree.bak
 start-public.bat
+
+# local deploy tooling
+.ghpages/
+deploy-ghpages.sh
+verify-ghp.mjs
