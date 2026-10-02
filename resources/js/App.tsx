@@ -132,6 +132,49 @@ const formatDuration=(minutes:number)=>{
   return `+${remainder} menit`;
 };
 
+// Ubah nilai apa pun (jam Excel, teks "8.30", "0830", "8:30 PM", dsb.) menjadi menit sejak 00:00.
+// Mengembalikan null bila tidak ada jam valid — dipakai agar pembacaan jam lebih akurat.
+const timeToMinutes=(value:any):number|null=>{
+  if(value===null||value===undefined||value==="") return null;
+  if(value instanceof Date&&!isNaN(value.getTime())) return value.getHours()*60+value.getMinutes();
+  if(typeof value==="number"&&Number.isFinite(value)){
+    let fraction=value;
+    if(value>=1&&value<86400&&Number.isInteger(value)){
+      // Beberapa ekspor menyimpan jam sebagai detik sejak tengah malam.
+      return Math.floor((value%86400)/60);
+    }
+    fraction=((value%1)+1)%1;
+    const minutes=Math.round(fraction*1440)%1440;
+    return minutes;
+  }
+  const text=String(value).trim();
+  if(!text) return null;
+  const meridiem=text.match(/(am|pm)/i)?.[1]?.toLowerCase();
+  let match=text.match(/(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?/);
+  if(match){
+    let hour=Number(match[1]);
+    if(meridiem==="pm"&&hour<12) hour+=12;
+    if(meridiem==="am"&&hour===12) hour=0;
+    if(hour>=24) hour%=24;
+    return hour*60+Number(match[2]);
+  }
+  match=text.match(/^(\d{1,2})$/);
+  if(match){
+    let hour=Number(match[1]);
+    if(meridiem==="pm"&&hour<12) hour+=12;
+    if(meridiem==="am"&&hour===12) hour=0;
+    return hour>=0&&hour<=23?hour*60:null;
+  }
+  match=text.match(/^(\d{3,4})$/);
+  if(match){
+    const digits=match[1].padStart(4,"0");
+    const hour=Number(digits.slice(0,2));
+    const minute=Number(digits.slice(2));
+    if(hour<=23&&minute<=59) return hour*60+minute;
+  }
+  return null;
+};
+
 
 const Icons: Record<string, React.ComponentType<{ className?: string }>> = {
  Home:(p:any)=><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" {...p}><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>,
@@ -176,24 +219,13 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
   const [detail,setDetail]=useState<Attendance|null>(null);
 
   const parseTime=(value:any):string=>{
-    if(value===null||value===undefined||value==="") return "-";
-    if(typeof value==="number"&&Number.isFinite(value)){
-      const fraction=((value%1)+1)%1;
-      const minutes=Math.round(fraction*1440)%1440;
-      return String(Math.floor(minutes/60)).padStart(2,"0")+":"+String(minutes%60).padStart(2,"0");
-    }
-    if(value instanceof Date&&!isNaN(value.getTime())){
-      return String(value.getHours()).padStart(2,"0")+":"+String(value.getMinutes()).padStart(2,"0");
-    }
-    const match=String(value).trim().match(/(\d{1,2})[:.](\d{2})(?::\d{2})?\s*(am|pm)?/i);
-    if(!match) return "-";
-    let hour=Number(match[1]);
-    if(match[3]?.toLowerCase()==="pm"&&hour<12) hour+=12;
-    if(match[3]?.toLowerCase()==="am"&&hour===12) hour=0;
-    return String(hour).padStart(2,"0")+":"+match[2];
+    const minutes=timeToMinutes(value);
+    if(minutes===null) return "-";
+    return String(Math.floor(minutes/60)).padStart(2,"0")+":"+String(minutes%60).padStart(2,"0");
   };
   const num=(value:any)=>{
     if(value===null||value===undefined||value==="") return 0;
+    // Nilai pecahan (0..1) biasanya durasi jam/hari Excel — konversi ke menit.
     if(typeof value==="number"&&Number.isFinite(value)) return value>0&&value<1?Math.round(value*1440):Math.round(value);
     const text=String(value).trim().toLowerCase();
     const hours=Number(text.match(/(\d+(?:[.,]\d+)?)\s*(?:jam|hours?|hrs?|h)\b/)?.[1]?.replace(",",".")||0);
@@ -242,9 +274,12 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
 
   const collectSheetRows=(workbook:any):SheetRow[]=>{
     const rows:SheetRow[]=[];
+    const stats={sheets:0,sheetsRead:0,sheetsSkipped:0,raw:0,invalid:0,deduped:0,duplicateConflicts:0,nightWrapped:0,clockValues:0};
     (workbook.SheetNames as string[]).forEach((sheetName:string)=>{
       const worksheet=workbook.Sheets[sheetName];
       if(!worksheet) return;
+      stats.sheets++;
+      const sheetRowStart=rows.length;
       const matrix=XLSX.utils.sheet_to_json<any[]>(worksheet,{header:1,raw:true,blankrows:false,defval:""});
       const topText=matrix.slice(0,30).flat().filter(value=>String(value??"").trim()!=="").join(" ");
       const period=periodFromText(sheetName+" "+topText);
@@ -359,7 +394,13 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
 
           const orderedEvents=Array.from(events.values()).sort((a,b)=>a.timestamp-b.timestamp);
           const consumed=new Set<number>();
+          // Kunci punch agar baris kembar dari shift malam tidak dihitung dua kali.
+          const punchKeys=new Set<string>();
+          const punchKey=(shiftName:string,checkIn:string,checkOut:string)=>`${normalizeKey(shiftName)}|${checkIn}|${checkOut}`;
           const pushAttendance=(date:DateParts,shiftName:string,checkIn:string,checkOut:string,overtime=0)=>{
+            const key=punchKey(shiftName,checkIn,checkOut);
+            if(punchKeys.has(key)) return;
+            punchKeys.add(key);
             rows.push({
               name,id,dept,shift:shiftName,date:new Date(date.year,date.month-1,date.day),month:formatMonth(date),
               checkIn,checkOut,status:checkIn||checkOut?"Hadir":"Tidak Hadir",
@@ -397,7 +438,9 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
             const previousEnd=previousParts?nearestShift(event.timestamp,previousParts,"end"):null;
             const endMatch=previousEnd&&(!sameDayEnd||previousEnd.difference<sameDayEnd.difference)?previousEnd:sameDayEnd;
             if(endMatch&&endMatch.difference<=240&&endMatch.difference<=(startMatch?.difference??Infinity)){
-              const workDate=endMatch===previousEnd&&previousParts?previousParts:event.date;
+              const isNightWrap=endMatch===previousEnd&&Boolean(previousParts);
+              const workDate=isNightWrap&&previousParts?previousParts:event.date;
+              if(isNightWrap) stats.nightWrapped++;
               const overtime=Math.max(0,Math.floor((event.timestamp-endMatch.expected)/60000));
               pushAttendance(workDate,endMatch.shift.name,"",event.time,overtime);
             }else if(startMatch&&startMatch.difference<=240){
@@ -416,6 +459,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
             if(!hasPunch) pushAttendance(date,"Belum ditentukan","","");
           });
         });
+        if(rows.length>sheetRowStart) stats.sheetsRead++; else stats.sheetsSkipped++;
         return;
       }
 
@@ -462,6 +506,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
             });
           }
         }
+        if(rows.length>sheetRowStart) stats.sheetsRead++; else stats.sheetsSkipped++;
         return;
       }
 
@@ -492,7 +537,6 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         if(!employees.size) continue;
 
         for(let rowIndex=ioRow+1;rowIndex<matrix.length;rowIndex++){
-          const row=matrix[rowIndex]||[];
           const date=dateFromDay(row[dateColumn],period);
           if(!date) continue;
           for(const employee of employees.values()){
@@ -510,6 +554,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
             });
           }
         }
+        if(rows.length>sheetRowStart) stats.sheetsRead++; else stats.sheetsSkipped++;
         return;
       }
 
@@ -549,9 +594,12 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         row.__sheetYear=rowPeriod?.year||0;
         rows.push(row);
       }
+      if(rows.length>sheetRowStart) stats.sheetsRead++; else stats.sheetsSkipped++;
     });
-    return rows;
-  };  const sortedAll=useMemo(()=>[...attendance].sort((a,b)=>{
+    return {rows,stats};
+  };
+
+  const sortedAll=useMemo(()=>[...attendance].sort((a,b)=>{
     const d=sortableDate(a.date)-sortableDate(b.date);
     if(d!==0) return d;
     const ma=monthIndex(a.month)-monthIndex(b.month);
@@ -580,7 +628,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
       (sheet==="Semua"||a.sheet===sheet) &&
       matchesShift &&
       `${a.name} ${a.dept} ${a.date} ${a.month} ${a.sheet} ${a.shift??""}`.toLowerCase().includes(q.toLowerCase());
-  }),[sortedAll,month,sheet,shift,q,selectedShift]);
+  },[sortedAll,month,sheet,shift,q,selectedShift]));
   const pageSize=50;
   const pageCount=Math.max(1,Math.ceil(filtered.length/pageSize));
   const currentPage=Math.min(page,pageCount);
@@ -592,7 +640,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
     setImportNotice(null);
     try{
       const workbook=XLSX.read(await file.arrayBuffer(),{type:"array",cellDates:true});
-      const rows=collectSheetRows(workbook);
+      const {rows,stats}=collectSheetRows(workbook);
       const imported=rows.map((row,index):Attendance|null=>{
         const rawDate=row.date;
         const explicitMonth=String(row.month??row.__sheetMonth??"").trim();
@@ -610,7 +658,8 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         const late=num(row.late);
         const overtime=num(row.overtime);
         const hasAttendance=date!=="-"||checkIn!=="-"||checkOut!=="-"||String(statusRaw??"").trim()!==""||late>0||overtime>0;
-        if((!name&&!row.id)||!hasAttendance) return null;
+        stats.raw++;
+        if((!name&&!row.id)||!hasAttendance){stats.invalid++;return null;}
         const employeeName=name||"Karyawan "+employeeId;
         return {
           key:"excel-"+Date.now()+"-"+index+"-"+normalizeKey(row.__sheet),
@@ -626,7 +675,30 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         return;
       }
 
-      setAttendance(imported);
+      // Buang baris kembar (karyawan + tanggal + shift + jam sama) agar rekap tidak dihitung dobel.
+      // Bila jam berbeda pada kunci sama, data dipertahankan (kecuali satu baris kosong tanpa jam).
+      const byKey=new Map<string,Attendance>();
+      imported.forEach(record=>{
+        const key=[record.employeeId,normalizeKey(record.date),normalizeKey(record.shift||""),record.checkIn,record.checkOut].join("|");
+        const bareKey=[record.employeeId,normalizeKey(record.date),normalizeKey(record.shift||"")].join("|");
+        const hasClock=record.checkIn!=="-"||record.checkOut!=="-";
+        const existing=byKey.get(key);
+        if(!existing){byKey.set(key,record);return;}
+        stats.deduped++;
+        if(existing.name==="Karyawan "+existing.employeeId&&record.name!=="Karyawan "+record.employeeId) byKey.set(key,record);
+      });
+      const deduped=Array.from(byKey.values());
+      // Baris tanpa jam kembar dengan baris berjam pada hari & shift sama → buang yang kosong.
+      const withClock=new Set(deduped.filter(r=>r.checkIn!=="-"||r.checkOut!=="-").map(r=>[r.employeeId,normalizeKey(r.date),normalizeKey(r.shift||"")].join("|")));
+      const cleaned=deduped.filter(r=>{
+        if(!workShifts.some(w=>w.name===r.shift)) return true;
+        const bare=[r.employeeId,normalizeKey(r.date),normalizeKey(r.shift||"")].join("|");
+        const noClock=r.checkIn==="-"&&r.checkOut==="-"&&r.status!=="telat"&&r.late===0&&r.overtime===0;
+        if(noClock&&withClock.has(bare)){stats.deduped++;return false;}
+        return true;
+      });
+
+      setAttendance(cleaned);
       setSelected([]);
       setPage(1);
       setDetail(null);
@@ -634,7 +706,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
       setSheet("Semua");
       setShift("Semua");
       const employeeMap=new Map<string,Employee>();
-      imported.forEach(record=>{
+      cleaned.forEach(record=>{
         if(!employeeMap.has(record.employeeId)){
           employeeMap.set(record.employeeId,{
             id:record.employeeId,name:record.name,dept:record.dept,status:record.status,
@@ -643,8 +715,15 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         }
       });
       setEmployees(Array.from(employeeMap.values()));
-      const sheetCount=new Set(imported.map(record=>record.sheet)).size;
-      setImportNotice({type:"success",message:file.name+" berhasil dibaca: "+imported.length+" data dari "+sheetCount+" sheet."});
+      const sheetCount=new Set(cleaned.map(record=>record.sheet)).size;
+      const detailParts=[
+        cleaned.length+" data dari "+sheetCount+" sheet",
+        stats.nightWrapped?stats.nightWrapped+" shift malam digabung ke tanggal kerja":"",
+        stats.deduped?stats.deduped+" baris kembar dibuang":"",
+        stats.invalid?stats.invalid+" baris dilewati (tanpa nama/tanggal/jam)":"",
+        stats.sheetsSkipped?stats.sheetsSkipped+" sheet dilewati (format tidak dikenali)":""
+      ].filter(Boolean);
+      setImportNotice({type:"success",message:file.name+" berhasil dibaca: "+detailParts.join(" · ")+"."});
     }catch(error){
       console.error(error);
       setImportNotice({type:"error",message:"File Excel tidak dapat dibaca. Pastikan formatnya .xlsx, .xls, atau .csv."});
@@ -772,10 +851,39 @@ function PrintRekap({employees,attendance}:{employees:Employee[];attendance:Atte
     if(!set.size) set.add(formatMonth(parseDateParts(new Date())));
     return Array.from(set).sort((a,b)=>monthIndex(a)-monthIndex(b));
   },[attendance]);
-  const [month,setMonth]=useState(months[months.length-1]||formatMonth(parseDateParts(new Date())));
+  const EMPTY_SENTINEL="__empty__";
+  const matchesShift=(a:Attendance,shiftValue:string)=>{
+    if(shiftValue==="Semua") return true;
+    if(shiftValue===EMPTY_SENTINEL) return !a.shift||a.shift==="-"||a.shift==="Belum ditentukan";
+    if(a.shift===shiftValue) return true;
+    const option=workShifts.find(w=>w.name===shiftValue);
+    if(!option) return false;
+    const minutes=timeToMinutes(a.checkIn);
+    if(minutes===null) return false;
+    const before=(timeToMinutes(option.start)??0)-minutes;
+    return before>0&&before<=30;
+  };
+  const shifts=useMemo(()=>{
+    const extraShifts=Array.from(new Set(attendance.map(a=>a.shift).filter((value):value is string=>Boolean(value&&value!=="-"&&value!=="Belum ditentukan"&&!workShifts.some(option=>option.name===value))))).sort((a,b)=>a.localeCompare(b,"id"));
+    return [...workShifts.map(option=>option.name),...extraShifts];
+  },[attendance]);
+  const hasEmptyShift=useMemo(()=>attendance.some(a=>!a.shift||a.shift==="-"||a.shift==="Belum ditentukan"),[attendance]);
+  const [month,setMonth]=useState("Semua");
+  const [monthMode,setMonthMode]=useState<"single"|"range"|"all">("single");
+  const [monthFrom,setMonthFrom]=useState("");
+  const [monthTo,setMonthTo]=useState("");
+  const [shift,setShift]=useState("Semua");
   const [employeeId,setEmployeeId]=useState("Semua");
-  const period=periodFromText(month);
-  const daysInMonth=period?new Date(period.year,period.month,0).getDate():31;
+  const effectiveMonth=monthMode==="single"?month:(monthMode==="range"?(monthFrom||months[months.length-1]||""):(months[months.length-1]||""));
+  const period=periodFromText(effectiveMonth);
+  const selectedMonths=useMemo(()=>{
+    if(monthMode==="all") return months;
+    if(monthMode==="single") return month==="Semua"?months:[month];
+    const a=monthIndex(monthFrom||months[0]);
+    const b=monthIndex(monthTo||months[months.length-1]);
+    const lo=Math.min(a,b);const hi=Math.max(a,b);
+    return months.filter(m=>{const pi=monthIndex(m);return pi>=lo&&pi<=hi;});
+  },[monthMode,month,monthFrom,monthTo,months]);
   const employeeList=useMemo(()=>{
     const seen=new Set<string>();
     const list:Array<{id:string;name:string;dept:string}>=[];
@@ -787,46 +895,59 @@ function PrintRekap({employees,attendance}:{employees:Employee[];attendance:Atte
   const parseDay=(a:Attendance)=>{const p=parseDateParts(a.date);return p?p.day:0;};
   const minutesFrom=(v:string)=>{const m=String(v||"").match(/^(\d{1,2}):(\d{2})$/);return m?Number(m[1])*60+Number(m[2]):null;};
   const clock=(min:number|null)=>min===null?"-":String(Math.floor(min/60)).padStart(2,"0")+":"+String(min%60).padStart(2,"0");
-  const summarize=(id:string,day:number)=>{
-    const recs=attendance.filter(a=>a.employeeId===id&&parseDay(a)===day);
+  const summarize=(id:string,day:number,monthValue:string)=>{
+    const recs=attendance.filter(a=>a.employeeId===id&&parseDay(a)===day&&a.month===monthValue&&matchesShift(a,shift));
     if(!recs.length) return null;
     const ins=recs.map(r=>minutesFrom(r.checkIn)).filter((x):x is number=>x!==null);
     const outs=recs.map(r=>minutesFrom(r.checkOut)).filter((x):x is number=>x!==null);
     const late=Math.max(0,...recs.map(r=>r.late||0));
     const overtime=recs.reduce((n,r)=>n+(r.overtime||0),0);
     const status:Status=late>0?"telat":(recs.some(r=>r.status==="hadir")?"hadir":recs[0].status);
-    return {checkIn:clock(ins.length?Math.min(...ins):null),checkOut:clock(outs.length?Math.max(...outs):null),late,overtime,status};
+    const shiftNames=Array.from(new Set(recs.map(r=>r.shift||"Belum ditentukan"))).join(", ");
+    return {checkIn:clock(ins.length?Math.min(...ins):null),checkOut:clock(outs.length?Math.max(...outs):null),late,overtime,status,shiftNames};
   };
-  const totals=(id:string)=>{
+  const totals=(id:string,monthValue:string,monthPeriod:{month:number;year:number}|null)=>{
     let late=0,ot=0,hadir=0,telat=0;
-    for(let d=1;d<=daysInMonth;d++){const r=summarize(id,d);if(!r) continue;late+=r.late;ot+=r.overtime;if(r.status==="hadir")hadir++;if(r.status==="telat")telat++;}
+    const dim=monthPeriod?new Date(monthPeriod.year,monthPeriod.month,0).getDate():31;
+    for(let d=1;d<=dim;d++){const r=summarize(id,d,monthValue);if(!r) continue;late+=r.late;ot+=r.overtime;if(r.status==="hadir")hadir++;if(r.status==="telat")telat++;}
     return {late,ot,hadir,telat};
   };
   const selectCls="mt-1 block w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white px-3 py-2 text-sm";
+  const shiftLabel=shift===EMPTY_SENTINEL?"Tanpa shift":shift;
   return <Page>
     <div className="no-print mb-5 flex flex-col lg:flex-row lg:items-end gap-3">
       <div><h2 className="text-xl font-bold text-slate-900 dark:text-white">Cetak Rekap Absensi</h2><p className="text-sm text-slate-500">Rekap per karyawan tanggal 1 s/d akhir bulan — telat &amp; lembur terlihat jelas.</p></div>
       <div className="lg:ml-auto flex flex-wrap items-end gap-3">
-        <label className="text-xs font-semibold text-slate-500">Bulan<select value={month} onChange={e=>setMonth(e.target.value)} className={selectCls}>{months.map(m=><option key={m} value={m}>{m}</option>)}</select></label>
+        <label className="text-xs font-semibold text-slate-500">Mode Bulan<select value={monthMode} onChange={e=>setMonthMode(e.target.value as any)} className={selectCls}><option value="single">Per Bulan</option><option value="range">Rentang Bulan</option><option value="all">Semua Bulan</option></select></label>
+        {monthMode==="single"&&<label className="text-xs font-semibold text-slate-500">Bulan<select value={month} onChange={e=>setMonth(e.target.value)} className={selectCls}><option value="Semua">Semua Bulan</option>{months.map(m=><option key={m} value={m}>{m}</option>)}</select></label>}
+        {monthMode==="range"&&<><label className="text-xs font-semibold text-slate-500">Dari bulan<select value={monthFrom} onChange={e=>setMonthFrom(e.target.value)} className={selectCls}>{months.map(m=><option key={m} value={m}>{m}</option>)}</select></label><label className="text-xs font-semibold text-slate-500">s/d bulan<select value={monthTo} onChange={e=>setMonthTo(e.target.value)} className={selectCls}>{months.map(m=><option key={m} value={m}>{m}</option>)}</select></label></>}
+        {monthMode==="all"&&<span className="self-center rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Mencetak {months.length} bulan</span>}
+        <label className="text-xs font-semibold text-slate-500">Shift<select value={shift} onChange={e=>setShift(e.target.value)} className={selectCls}><option value="Semua">Semua Shift</option>{shifts.map(sv=><option key={sv} value={sv}>{sv}</option>)}{hasEmptyShift&&<option value={EMPTY_SENTINEL}>Tanpa shift</option>}</select></label>
         <label className="text-xs font-semibold text-slate-500">Karyawan<select value={employeeId} onChange={e=>setEmployeeId(e.target.value)} className={selectCls}><option value="Semua">Semua Karyawan</option>{employeeList.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</select></label>
         <Button onClick={()=>window.print()}>🖨️ Cetak / Simpan PDF</Button>
       </div>
     </div>
     <div className="print-area">
-      {targets.map((emp,idx)=>{const t=totals(emp.id);return <div key={emp.id} className={`rekap-card ${idx<targets.length-1?"page-break":""}`}>
-        <div className="rekap-title">REKAP ABSENSI KARYAWAN</div>
-        <div className="rekap-sub">Periode: {month}</div>
-        <div className="rekap-meta"><span><b>Nama:</b> {emp.name}</span><span><b>ID:</b> {emp.id}</span><span><b>Departemen:</b> {emp.dept||"Umum"}</span></div>
-        <table className="rekap-table">
-          <thead><tr><th>Tgl</th><th>Hari</th><th>Jam Masuk</th><th>Jam Pulang</th><th>Telat</th><th>Lembur</th><th>Status</th></tr></thead>
-          <tbody>{Array.from({length:daysInMonth},(_,i)=>i+1).map(d=>{const r=summarize(emp.id,d);const dow=period?new Date(period.year,period.month-1,d).getDay():0;const weekend=dow===0||dow===6;return <tr key={d} style={weekend?{color:"#b91c1c"}:undefined}>
-            <td>{String(d).padStart(2,"0")}</td><td>{dayNames[dow]}</td><td>{r?.checkIn||"-"}</td><td>{r?.checkOut||"-"}</td>
-            <td>{r&&r.late>0?`${r.late} menit`:"-"}</td><td>{r&&r.overtime>0?formatDuration(r.overtime):"-"}</td><td>{r?statusLabel(r.status):"-"}</td>
-          </tr>;})}</tbody>
-          <tfoot><tr><td colSpan={4}>TOTAL ({t.hadir} hadir, {t.telat} hari telat)</td><td>{t.late} menit</td><td>{formatDuration(t.ot)}</td><td></td></tr></tfoot>
-        </table>
-        <div className="rekap-sign"><div>Disetujui,<div className="rekap-line">HRD / Manager</div></div><div>Dibuat oleh,<div className="rekap-line">Admin Absensi</div></div></div>
-      </div>;})}
+      {selectedMonths.map(mo=>{
+        const moPeriod=periodFromText(mo);
+        const moDays=moPeriod?new Date(moPeriod.year,moPeriod.month,0).getDate():31;
+        return <div key={mo} className="rekap-month-group">
+          {targets.map(emp=>{const t=totals(emp.id,mo,moPeriod);return <div key={mo+"-"+emp.id} className="rekap-card">
+            <div className="rekap-title">REKAP ABSENSI KARYAWAN</div>
+            <div className="rekap-sub">Periode: {mo}{shift!=="Semua"?" - Shift: "+shiftLabel:""}</div>
+            <div className="rekap-meta"><span><b>Nama:</b> {emp.name}</span><span><b>ID:</b> {emp.id}</span><span><b>Departemen:</b> {emp.dept||"Umum"}</span></div>
+            <table className="rekap-table">
+              <thead><tr><th>Tgl</th><th>Hari</th><th>Jam Masuk</th><th>Jam Pulang</th><th>Shift</th><th>Telat</th><th>Lembur</th><th>Status</th></tr></thead>
+              <tbody>{Array.from({length:moDays},(_,k)=>k+1).map(d=>{const r=summarize(emp.id,d,mo);const dow=moPeriod?new Date(moPeriod.year,moPeriod.month-1,d).getDay():0;const weekend=dow===0||dow===6;return <tr key={d} style={weekend?{color:"#b91c1c"}:undefined}>
+                <td>{String(d).padStart(2,"0")}</td><td>{dayNames[dow]}</td><td>{r?.checkIn||"-"}</td><td>{r?.checkOut||"-"}</td><td>{r?.shiftNames||"-"}</td>
+                <td>{r&&r.late>0?r.late+" menit":"-"}</td><td>{r&&r.overtime>0?formatDuration(r.overtime):"-"}</td><td>{r?statusLabel(r.status):"-"}</td>
+              </tr>;})}</tbody>
+              <tfoot><tr><td colSpan={4}>TOTAL ({t.hadir} hadir, {t.telat} hari telat)</td><td></td><td>{t.late} menit</td><td>{formatDuration(t.ot)}</td><td></td></tr></tfoot>
+            </table>
+            <div className="rekap-sign"><div>Disetujui,<div className="rekap-line">HRD / Manager</div></div><div>Dibuat oleh,<div className="rekap-line">Admin Absensi</div></div></div>
+          </div>;})}
+        </div>;
+      })}
       {!targets.length&&<Card className="p-8 text-center text-slate-400">Belum ada data. Import file Excel di menu <b>Data Absensi</b> terlebih dahulu.</Card>}
     </div>
   </Page>;

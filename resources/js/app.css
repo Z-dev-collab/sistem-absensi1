@@ -88,6 +88,8 @@ select {
 
 /* ---------------- Cetak / Print Rekap ---------------- */
 .print-area { color:#000; background:#fff; }
+.rekap-month-group { margin-bottom:22px; }
+.rekap-month-group:not(:first-child) { break-before: page; page-break-before: always; }
 .rekap-card { margin-bottom:26px; }
 .rekap-title { font-size:19px; font-weight:800; text-align:center; letter-spacing:.4px; }
 .rekap-sub { font-size:13px; font-weight:600; text-align:center; margin:2px 0 10px; }
@@ -106,6 +108,7 @@ select {
   body, .print-area, .print-area * { color:#000 !important; background:transparent !important; }
   .rekap-table thead th, .rekap-table tfoot td { background:#e5e7eb !important; }
   .rekap-card { break-inside: avoid; page-break-inside: avoid; }
+  .rekap-month-group:not(:first-child) { break-before: page; page-break-before: always; }
   .page-break { break-after: page; page-break-after: always; }
   .page-break:last-child { break-after: auto; page-break-after: auto; }
 }
