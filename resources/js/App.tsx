@@ -761,9 +761,6 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         <Icons.Search className="absolute left-3 top-3.5 w-4 text-slate-400"/>
         <input value={q} onChange={e=>{setPage(1);setQ(e.target.value)}} placeholder="Cari nama, tanggal, bulan..." className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"/>
       </div>
-      <select value={month} onChange={e=>{setPage(1);setMonth(e.target.value)}} className="px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white">
-        <option>Semua</option>{months.map(m=><option key={m}>{m}</option>)}
-      </select>
       <select value={sheet} onChange={e=>{setPage(1);setSheet(e.target.value)}} aria-label="Filter sheet Excel" className="px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white">
         <option>Semua</option>{sheets.map(value=><option key={value}>{value}</option>)}
       </select>
@@ -776,26 +773,24 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1600px]">
           <thead><tr className="bg-slate-50 dark:bg-slate-800/60 text-xs text-slate-500 text-left whitespace-nowrap">
-            <th className="p-4"><input type="checkbox" checked={filtered.length>0&&filtered.every(a=>selected.includes(a.key))} onChange={e=>setSelected(e.target.checked?filtered.map(a=>a.key):[])}/></th>
-            <th className="px-4 py-4 min-w-[150px]">Nama</th>
-            <th className="px-4 py-4 min-w-[170px]">Tanggal</th>
-            <th className="px-4 py-4 min-w-[150px]">Bulan</th>
-            <th className="px-4 py-4 min-w-[210px]">Sheet</th>
-            <th className="px-4 py-4 min-w-[140px]">Shift</th>
-            <th className="px-4 py-4 min-w-[135px] text-center border-l border-blue-100 bg-blue-50 text-blue-700 dark:border-blue-900/70 dark:bg-blue-950/40 dark:text-blue-300">Jam Masuk</th>
-            <th className="px-4 py-4 min-w-[135px] text-center border-l border-emerald-100 bg-emerald-50 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/40 dark:text-emerald-300">Jam Pulang</th>
-            <th className="px-4 py-4 min-w-[105px]">Status</th>
-            <th className="px-4 py-4 min-w-[85px]">Telat</th>
-            <th className="px-4 py-4 min-w-[130px]">Lembur</th>
-            <th className="px-4 py-4 min-w-[90px]">Detail</th>
-            <th className="px-4 py-4 min-w-[75px]">Aksi</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 p-4"><input type="checkbox" checked={filtered.length>0&&filtered.every(a=>selected.includes(a.key))} onChange={e=>setSelected(e.target.checked?filtered.map(a=>a.key):[])}/></th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[150px]">Nama</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[170px]">Tanggal</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[210px]">Sheet</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[140px]">Shift</th>
+            <th className="sticky top-0 z-10 border-l border-blue-100 bg-blue-50 px-4 py-4 min-w-[135px] text-center text-blue-700 dark:border-blue-900/70 dark:bg-blue-950 dark:text-blue-300">Jam Masuk</th>
+            <th className="sticky top-0 z-10 border-l border-emerald-100 bg-emerald-50 px-4 py-4 min-w-[135px] text-center text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950 dark:text-emerald-300">Jam Pulang</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[105px]">Status</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[85px]">Telat</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[130px]">Lembur</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[90px]">Detail</th>
+            <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 px-4 py-4 min-w-[75px]">Aksi</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {visibleRows.map(a=><tr key={a.key} onClick={()=>setDetail(a)} className="text-sm whitespace-nowrap hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer">
               <td className="p-4" onClick={e=>e.stopPropagation()}><input type="checkbox" checked={selected.includes(a.key)} onChange={e=>setSelected(s=>e.target.checked?[...s,a.key]:s.filter(k=>k!==a.key))}/></td>
               <td className="px-4 py-4 min-w-[150px] font-semibold text-slate-900 dark:text-white">{a.name}</td>
               <td className="px-4 py-4 min-w-[170px]">{a.date}</td>
-              <td className="px-4 py-4 min-w-[150px]">{a.month}</td>
               <td className="px-4 py-4 min-w-[210px]"><span className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{a.sheet}</span></td>
               <td className="px-4 py-4 min-w-[140px]">{a.shift||"-"}</td>
               <td className="px-4 py-3 min-w-[135px] text-center border-l border-slate-100 dark:border-slate-800">
@@ -810,7 +805,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
               <td className="px-4 py-4 min-w-[90px]"><Button variant="ghost" onClick={()=>setDetail(a)}>Lihat</Button></td>
               <td className="px-4 py-4 min-w-[75px]" onClick={e=>e.stopPropagation()}><button onClick={()=>del(a.key)} className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg"><Icons.Trash className="w-4"/></button></td>
             </tr>)}
-            {!filtered.length&&<tr><td colSpan={13} className="p-10 text-center text-sm text-slate-400">Tidak ada data untuk filter ini. Impor file Excel untuk memuat absensi.</td></tr>}
+            {!filtered.length&&<tr><td colSpan={12} className="p-10 text-center text-sm text-slate-400">Tidak ada data untuk filter ini. Impor file Excel untuk memuat absensi.</td></tr>}
           </tbody>
         </table>
       </div>
