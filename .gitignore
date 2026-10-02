@@ -35,3 +35,5 @@ start-public.bat
 .ghpages/
 deploy-ghpages.sh
 verify-ghp.mjs
+
+.vercel
