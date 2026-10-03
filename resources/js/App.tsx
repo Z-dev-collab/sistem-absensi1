@@ -104,6 +104,21 @@ const dateFromDay=(dayValue:any,period:{month:number;year:number}|null):DatePart
   return parseDateParts(dayValue);
 };
 
+// Geser periode ke bulan berikutnya saat nomor hari "turun" (mis. 30 lalu 1).
+// Dipakai untuk sheet absensi yang menyeberang pergantian bulan.
+const shiftPeriod=(period:{month:number;year:number}|null,delta:number):{month:number;year:number}|null=>{
+  if(!period) return null;
+  const index=period.year*12+(period.month-1)+delta;
+  return {year:Math.floor(index/12),month:(index%12)+1};
+};
+
+// Nomor hari yang lebih kecil dari hari sebelumnya berarti masuk bulan berikutnya.
+const rolloverPeriod=(day:number,previousDay:number|null,base:{month:number;year:number}|null):{month:number;year:number}|null=>{
+  if(!base) return null;
+  if(day>=1&&day<=15&&previousDay!==null&&previousDay>=20) return shiftPeriod(base,1);
+  return base;
+};
+
 const formatDate=(parts:DateParts|null)=>parts?`${String(parts.day).padStart(2,"0")} ${monthNames[parts.month-1]} ${parts.year}`:"-";
 const formatMonth=(parts:DateParts|null,period:{month:number;year:number}|null=null)=>{
   const month=parts?.month||period?.month;
@@ -245,6 +260,63 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
     if(value.includes("hadir")||value.includes("masuk")||value==="h"||value==="1"||checkIn!=="-"||checkOut!=="-") return "hadir";
     return "belum-absen";
   };
+
+  // Cari shift kerja yang paling cocok dengan jam masuk, supaya telat/lembur bisa dihitung otomatis
+  // walau file Excel tidak menyertakan kolom shift.
+  const inferShift=(checkIn:string,checkOut:string):WorkShift|null=>{
+    const inMinutes=timeToMinutes(checkIn);
+    const outMinutes=timeToMinutes(checkOut);
+    if(inMinutes===null&&outMinutes===null) return null;
+    let best:{shift:WorkShift;score:number}|null=null;
+    workShifts.forEach(candidate=>{
+      const start=timeToMinutes(candidate.start);
+      const end=timeToMinutes(candidate.end);
+      let score=0;
+      if(inMinutes!==null&&start!==null){
+        const diff=(inMinutes-start+1440)%1440;
+        if(diff>720) score+=4000+(1440-diff);
+        else score+=diff;
+      }else score+=600;
+      if(outMinutes!==null&&end!==null){
+        const raw=end-timeToMinutes(candidate.start)<=0&&end<=start?end+1440:end;
+        const diff=(outMinutes-raw+1440)%1440;
+        if(diff>720) score+=4000+(1440-diff);
+        else score+=diff*0.6;
+      }
+      if(!best||score<best.score) best={shift:candidate,score};
+    });
+    return best?best.shift:null;
+  };
+
+  // Hitung telat & lembur dari jam masuk/pulang nyata terhadap aturan shift.
+  // Telat = menit dari jam mulai shift (+toleransi), lembur = menit setelah jam pulang shift.
+  // Jam masuk/pulang yang tampak jauh (beda hari) ataupun shift malam ditangani dengan pembungkusan 24 jam.
+  const deriveMetrics=(checkIn:string,checkOut:string,shiftName:string,overtimeHint:number,lateHint:number)=>{
+    const named=workShifts.find(option=>option.name===shiftName);
+    const shift=named||inferShift(checkIn,checkOut);
+    if(!shift) return {late:Math.max(0,lateHint),overtime:Math.max(0,overtimeHint)};
+    const startMin=timeToMinutes(shift.start);
+    const endMin=timeToMinutes(shift.end);
+    const inMin=timeToMinutes(checkIn);
+    const outMin=timeToMinutes(checkOut);
+    const tolerance=10;
+    let late=Math.max(0,lateHint);
+    if(inMin!==null&&startMin!==null&&String(checkIn).trim()!=="-"){
+      const diff=(inMin-startMin+1440)%1440;
+      const value=diff>720?0:diff;
+      late=value>tolerance?value:0;
+    }
+    let overtime=Math.max(0,overtimeHint);
+    if(outMin!==null&&endMin!==null&&String(checkOut).trim()!=="-"){
+      let endRef=endMin;
+      if(endRef<=startMin) endRef+=1440;
+      let outRef=outMin;
+      if(outRef<startMin) outRef+=1440;
+      const diff=outRef-endRef;
+      if(diff>0&&diff<720) overtime=diff;
+    }
+    return {late,overtime};
+  };
   const headerAliases:Record<string,string[]> = {
     date:["tanggal","tanggal absen","tanggal absensi","tgl","date","attendance date","absen date","dated"],
     month:["bulan","month","periode","period"],
@@ -366,9 +438,12 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
           const nextUserRowIndex=userRows[userIndex+1]??matrix.length;
           const events=new Map<number,{timestamp:number;time:string;date:DateParts}>();
           const daySet=new Set<string>();
+          let previousDay:number|null=null;
           dayColumns.forEach(({column,day})=>{
-            const date=validDateParts(period.year,period.month,day);
+            const rolled=rolloverPeriod(day,previousDay,period);
+            const date=rolled?validDateParts(rolled.year,rolled.month,day):validDateParts(period.year,period.month,day);
             if(!date) return;
+            previousDay=day;
             daySet.add(`${date.year}-${date.month}-${date.day}`);
             for(let rowIndex=dayRowIndex+1;rowIndex<nextUserRowIndex;rowIndex++){
               const rawCell=matrix[rowIndex]?.[column];
@@ -491,18 +566,21 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
           const employeeId=String(idColumn>=0?row[idColumn]??"":"").trim()||stableEmployeeId(name);
           const dept=String(deptColumn>=0?row[deptColumn]??"":"").trim()||"-";
           const rowPeriod=periodFromText(String(monthColumn>=0?row[monthColumn]??"":"")+" "+String(yearColumn>=0?row[yearColumn]??"":""))||period;
+          let previousDay:number|null=null;
           for(const item of dayColumns){
             const value=row[item.column];
             if(value===null||value===undefined||String(value).trim()===""||String(value).trim()==="-") continue;
-            const date=item.date||dateFromDay(item.day,rowPeriod);
+            const rolled=rolloverPeriod(item.day,previousDay,rowPeriod);
+            const date=item.date||(rolled?validDateParts(rolled.year,rolled.month,item.day):dateFromDay(item.day,rowPeriod));
+            previousDay=item.day;
             const raw=String(value).trim();
             const times=raw.match(/\d{1,2}[:.]\d{2}(?::\d{2})?/g)||[];
             rows.push({
               name,id:employeeId,dept,date:date?new Date(date.year,date.month-1,date.day):null,
               shift:String(shiftColumn>=0?row[shiftColumn]??"":"").trim(),
-              month:formatMonth(date,rowPeriod),checkIn:times[0]||"",checkOut:times[1]||"",
+              month:formatMonth(date,date&&{month:date.month,year:date.year}||rowPeriod),checkIn:times[0]||"",checkOut:times[1]||"",
               status:raw,late:0,overtime:0,location:"",__sheet:sheetName,
-              __sheetMonth:formatMonth(null,rowPeriod),__sheetYear:rowPeriod?.year||0
+              __sheetMonth:formatMonth(date,date&&{month:date.month,year:date.year}||rowPeriod),__sheetYear:date?.year||rowPeriod?.year||0
             });
           }
         }
@@ -655,12 +733,17 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         const checkIn=parseTime(row.checkIn);
         const checkOut=parseTime(row.checkOut);
         const statusRaw=row.status;
-        const late=num(row.late);
-        const overtime=num(row.overtime);
+        const lateHint=num(row.late);
+        const overtimeHint=num(row.overtime);
+        const shiftName=String(row.shift??row.shiftName??"").trim()||(inferShift(checkIn,checkOut)?.name??"");
+        const metrics=deriveMetrics(checkIn,checkOut,shiftName,overtimeHint,lateHint);
+        const late=metrics.late;
+        const overtime=metrics.overtime;
         const hasAttendance=date!=="-"||checkIn!=="-"||checkOut!=="-"||String(statusRaw??"").trim()!==""||late>0||overtime>0;
         stats.raw++;
         if((!name&&!row.id)||!hasAttendance){stats.invalid++;return null;}
         const employeeName=name||"Karyawan "+employeeId;
+        const resolvedShift=String(row.shift??row.shiftName??"").trim()||shiftName||"Belum ditentukan";
         return {
           key:"excel-"+Date.now()+"-"+index+"-"+normalizeKey(row.__sheet),
           employeeId,name:employeeName,dept,date,month,sheet:row.__sheet||"Sheet 1",
