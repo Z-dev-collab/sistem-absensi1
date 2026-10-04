@@ -376,8 +376,8 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
           const endOffset=end<=start?end+1440:end;
           return {start:midnight+start*60000,end:midnight+endOffset*60000};
         };
-        const nearestShift=(timestamp:number,date:DateParts,edge:"start"|"end")=>{
-          const candidates=workShifts.map(candidate=>{
+        const nearestShift=(timestamp:number,date:DateParts,edge:"start"|"end",list:WorkShift[]=workShifts)=>{
+          const candidates=list.map(candidate=>{
             const expected=shiftWindow(date,candidate)[edge];
             return {shift:candidate,expected,difference:Math.abs(timestamp-expected)/60000};
           });
@@ -387,9 +387,26 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
           }
           return candidates.reduce<typeof candidates[number]|null>((best,candidate)=>!best||candidate.difference<best.difference?candidate:best,null);
         };
-        const findPair=(start:{timestamp:number;time:string;date:DateParts},end:{timestamp:number;time:string;date:DateParts})=>{
+        const findPair=(start:{timestamp:number;time:string;date:DateParts},end:{timestamp:number;time:string;date:DateParts},declaredShifts:WorkShift[]=[])=>{
           const duration=(end.timestamp-start.timestamp)/60000;
           if(duration<300||duration>1200) return null;
+          // Jangan gabungkan shift yang melewati batas bulan. Checkout di kolom tanggal 1
+          // (bulan berikutnya) harus tetap tampil sebagai baris bulan berikutnya, bukan
+          // dilipat ke shift tanggal terakhir bulan sebelumnya.
+          if(start.date.year!==end.date.year||start.date.month!==end.date.month) return null;
+          // Bila karyawan punya shift tetap di header dan jam masuk cocok dengannya, pakai shift itu.
+          if(declaredShifts.length){
+            const fit=declaredShifts.map(shift=>{
+              const window=shiftWindow(start.date,shift);
+              return {shift,window,diff:Math.abs(start.timestamp-window.start)/60000};
+            }).filter(item=>item.diff<=60).sort((a,b)=>a.diff-b.diff)[0];
+            if(fit){
+              const endDifference=Math.abs(end.timestamp-fit.window.end)/60000;
+              if(endDifference<=360){
+                return {shift:fit.shift,overtime:Math.max(0,Math.floor((end.timestamp-fit.window.end)/60000)),score:fit.diff+endDifference};
+              }
+            }
+          }
           const arrivalMatch=nearestShift(start.timestamp,start.date,"start");
           if(!arrivalMatch||arrivalMatch.difference>240) return null;
           const previousShiftWithOnTimeDeparture=workShifts.reduce<{shift:WorkShift;endDifference:number}|null>((best,candidate)=>{
@@ -434,6 +451,17 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
             if(Number.isInteger(day)&&day>=1&&day<=31) dayColumns.push({column,day});
           });
           if(!dayColumns.length) return;
+
+          // Shift kerja karyawan tertulis di baris header (mis. "16:00 - 02:00").
+          // Dipakai lebih dulu agar shift malam dinilai dari jam aslinya, bukan hasil tebakan.
+          const shiftPattern=/^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}$/;
+          const declaredShifts:WorkShift[]=[];
+          for(let column=0;column<userRow.length;column++){
+            const text=String(userRow[column]??"").trim();
+            if(!shiftPattern.test(text)) continue;
+            const [start,end]=text.split("-").map(value=>value.trim());
+            if(!declaredShifts.some(option=>option.name===text)) declaredShifts.push({name:text,start,end});
+          }
 
           const nextUserRowIndex=userRows[userIndex+1]??matrix.length;
           const events=new Map<number,{timestamp:number;time:string;date:DateParts}>();
@@ -492,7 +520,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
               const end=orderedEvents[endIndex];
               if((end.timestamp-start.timestamp)/60000>1200) break;
               if(consumed.has(end.timestamp)) continue;
-              const pair=findPair(start,end);
+              const pair=findPair(start,end,declaredShifts);
               if(!pair) continue;
               const skipped=orderedEvents.slice(startIndex+1,endIndex).filter(event=>!consumed.has(event.timestamp)).length;
               const score=pair.score+skipped*180;
@@ -513,7 +541,12 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
             const previousEnd=previousParts?nearestShift(event.timestamp,previousParts,"end"):null;
             const endMatch=previousEnd&&(!sameDayEnd||previousEnd.difference<sameDayEnd.difference)?previousEnd:sameDayEnd;
             if(endMatch&&endMatch.difference<=240&&endMatch.difference<=(startMatch?.difference??Infinity)){
-              const isNightWrap=endMatch===previousEnd&&Boolean(previousParts);
+              // Shift malam hanya boleh dilipat ke hari sebelumnya bila hari itu memang ada di sheet.
+              // Kalau tidak (mis. jam dini hari di tanggal 1 sementara tanggal 31 tidak ada), biarkan
+              // di tanggal aslinya supaya tidak nyasar ke bulan sebelumnya.
+              const previousKey=previousParts?`${previousParts.year}-${previousParts.month}-${previousParts.day}`:"";
+              const sameMonth=previousParts&&(event.date.month===previousParts.month&&event.date.year===previousParts.year);
+              const isNightWrap=endMatch===previousEnd&&Boolean(previousParts)&&daySet.has(previousKey)&&sameMonth;
               const workDate=isNightWrap&&previousParts?previousParts:event.date;
               if(isNightWrap) stats.nightWrapped++;
               const overtime=Math.max(0,Math.floor((event.timestamp-endMatch.expected)/60000));
