@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
+import { parseClockToMinutes as parseClockRobust, formatClock as formatClockRobust, normalizeEmployeeId as normalizeIdRobust, parseDurationMinutes as parseDurRobust, classifyStatus as classifyStatusRobust, stableRecordKey } from "./excelUtils";
+import { buildPayload, downloadJson, encodeShareCode, decodeShareCode, mergeByKey, LS_EMP, LS_ATT } from "./syncUtils";
 
 type Screen = "dashboard" | "employees" | "attendance" | "reports" | "overtime" | "print" | "settings";
 type Status = "hadir" | "telat" | "tidak-hadir" | "belum-absen";
@@ -234,9 +236,9 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
   const [detail,setDetail]=useState<Attendance|null>(null);
 
   const parseTime=(value:any):string=>{
-    const minutes=timeToMinutes(value);
-    if(minutes===null) return "-";
-    return String(Math.floor(minutes/60)).padStart(2,"0")+":"+String(minutes%60).padStart(2,"0");
+    const minutes=parseClockRobust(value) ?? timeToMinutes(value);
+    if(minutes===null||minutes===undefined) return "-";
+    return formatClockRobust(minutes);
   };
   const num=(value:any)=>{
     if(value===null||value===undefined||value==="") return 0;
@@ -251,15 +253,9 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
     const number=Number(text.replace(",","."));
     return Number.isFinite(number)?Math.round(number):0;
   };
-  const stableEmployeeId=(name:string)=>"EMP-"+(normalizeKey(name).slice(0,18).toUpperCase()||"TANPA-NAMA");
-  const attendanceStatus=(raw:any,checkIn:string,checkOut:string):Status=>{
-    const value=normalizeKey(raw);
-    if(value.includes("belum")) return "belum-absen";
-    if(value.includes("telat")||value.includes("terlambat")||value==="12"||value==="05") return "telat";
-    if(value.includes("tidak")||value.includes("absen")||value.includes("alpa")||value==="alpha"||value==="a"||value==="0"||value.includes("izin")||value.includes("ijin")||value.includes("sakit")) return "tidak-hadir";
-    if(value.includes("hadir")||value.includes("masuk")||value==="h"||value==="1"||checkIn!=="-"||checkOut!=="-") return "hadir";
-    return "belum-absen";
-  };
+  const numRobust=(value:any)=>parseDurRobust(value);
+  const stableEmployeeId=(name:string,rawId?:any)=>(rawId===undefined||rawId===name)?"EMP-"+(normalizeKey(name).slice(0,18).toUpperCase()||"TANPA-NAMA"):normalizeIdRobust(name,rawId);
+  const attendanceStatus=(raw:any,checkIn:string,checkOut:string,late=0):Status=>classifyStatusRobust(raw,checkIn,checkOut,late)
 
   // Cari shift kerja yang paling cocok dengan jam masuk, supaya telat/lembur bisa dihitung otomatis
   // walau file Excel tidak menyertakan kolom shift.
@@ -317,6 +313,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
     }
     return {late,overtime};
   };
+
   const headerAliases:Record<string,string[]> = {
     date:["tanggal","tanggal absen","tanggal absensi","tgl","date","attendance date","absen date","dated"],
     month:["bulan","month","periode","period"],
@@ -441,7 +438,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
           const name=valueAfterLabel(userRow,"name");
           if(!name) return;
           const rawId=valueAfterLabel(userRow,"userid");
-          const id=rawId?`EMP-${/^\d+$/.test(rawId)?rawId.padStart(3,"0"):rawId}`:stableEmployeeId(name);
+          const id=rawId?`EMP-${/^\d+$/.test(rawId)?rawId.padStart(3,"0"):rawId}`:stableEmployeeId(name,row.id ?? row.employeeId ?? name);
           const dept=valueAfterLabel(userRow,"department")||"-";
           const dayRowIndex=userRowIndex+1;
           const dayRow=matrix[dayRowIndex]||[];
@@ -596,7 +593,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
           const row=matrix[rowIndex]||[];
           const name=String(row[nameColumn]??"").trim();
           if(!name||["nama","name","karyawan","jumlah","total","no","nomor"].includes(normalizeKey(name))) continue;
-          const employeeId=String(idColumn>=0?row[idColumn]??"":"").trim()||stableEmployeeId(name);
+          const employeeId=String(idColumn>=0?row[idColumn]??"":"").trim()||stableEmployeeId(name,row.id ?? row.employeeId ?? name);
           const dept=String(deptColumn>=0?row[deptColumn]??"":"").trim()||"-";
           const rowPeriod=periodFromText(String(monthColumn>=0?row[monthColumn]??"":"")+" "+String(yearColumn>=0?row[yearColumn]??"":""))||period;
           let previousDay:number|null=null;
@@ -761,13 +758,13 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         const dateTime=dateParts?new Date(dateParts.year,dateParts.month-1,dateParts.day).getTime():sortableDate(rawDate);
         const month=formatMonth(dateParts,period)||monthFromDate(dateTime)||explicitMonth||"-";
         const name=String(row.name??"").trim();
-        const employeeId=String(row.id??row.employeeId??"").trim()||stableEmployeeId(name);
+        const employeeId=String(row.id??row.employeeId??"").trim()||stableEmployeeId(name,row.id ?? row.employeeId ?? name);
         const dept=String(row.dept??"").trim()||"-";
         const checkIn=parseTime(row.checkIn);
         const checkOut=parseTime(row.checkOut);
         const statusRaw=row.status;
-        const lateHint=num(row.late);
-        const overtimeHint=num(row.overtime);
+        const lateHint=numRobust(row.late);
+        const overtimeHint=numRobust(row.overtime);
         const shiftName=String(row.shift??row.shiftName??"").trim()||(inferShift(checkIn,checkOut)?.name??"");
         const metrics=deriveMetrics(checkIn,checkOut,shiftName,overtimeHint,lateHint);
         const late=metrics.late;
@@ -778,10 +775,10 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         const employeeName=name||"Karyawan "+employeeId;
         const resolvedShift=String(row.shift??row.shiftName??"").trim()||shiftName||"Belum ditentukan";
         return {
-          key:"excel-"+Date.now()+"-"+index+"-"+normalizeKey(row.__sheet),
+          key:stableRecordKey(employeeId,date,shiftName,checkIn,checkOut)+"::"+normalizeKey(row.__sheet || "sheet-1"),
           employeeId,name:employeeName,dept,date,month,sheet:row.__sheet||"Sheet 1",
           shift:String(row.shift??row.shiftName??"").trim()||"Belum ditentukan",
-          checkIn,checkOut,status:attendanceStatus(statusRaw,checkIn,checkOut),
+          checkIn,checkOut,status:attendanceStatus(statusRaw,checkIn,checkOut,late),
           late,overtime,location:String(row.location??"").trim()||"-"
         };
       }).filter((record):record is Attendance=>record!==null);
@@ -814,7 +811,11 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
         return true;
       });
 
-      setAttendance(cleaned);
+      setAttendance(prev=>{
+        const merged=mergeByKey(prev,cleaned,r=>stableRecordKey(r.employeeId,r.date,r.shift||"",r.checkIn,r.checkOut)+"::"+normalizeKey((r as any).sheet||""));
+        try{localStorage.setItem(LS_ATT,JSON.stringify(merged));}catch{}
+        return merged;
+      });
       setSelected([]);
       setPage(1);
       setDetail(null);
@@ -886,7 +887,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
     </div>
 
     <Card className="overflow-hidden">
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto hidden md:block">
         <table className="w-full min-w-[1600px]">
           <thead><tr className="bg-slate-50 dark:bg-slate-800/60 text-xs text-slate-500 text-left whitespace-nowrap">
             <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 p-4"><input type="checkbox" checked={filtered.length>0&&filtered.every(a=>selected.includes(a.key))} onChange={e=>setSelected(e.target.checked?filtered.map(a=>a.key):[])}/></th>
@@ -925,6 +926,7 @@ function AttendancePage({attendance,setAttendance,setEmployees}:{attendance:Atte
           </tbody>
         </table>
       </div>
+      <div className="md:hidden divide-y divide-slate-100 dark:divide-slate-800">{visibleRows.map(a=><div key={a.key} onClick={()=>setDetail(a)} className="p-4 cursor-pointer"><div className="flex items-center justify-between gap-2"><div className="font-bold text-slate-900 dark:text-white">{a.name}</div><span className={`px-2.5 py-1 rounded-full border text-xs ${statusClass(a.status)}`}>{statusLabel(a.status)}</span></div><div className="mt-1 text-xs text-slate-500">{a.date} · {a.month} · {a.sheet} · {a.shift||"-"}</div><div className="mt-2 flex gap-2 text-center"><span className="flex-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 px-2 py-1.5 text-sm font-bold text-blue-700 dark:text-blue-300">Masuk {a.checkIn}</span><span className="flex-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1.5 text-sm font-bold text-emerald-700 dark:text-emerald-300">Pulang {a.checkOut}</span></div><div className="mt-1 text-xs text-slate-500">Telat: {a.late?a.late+" mnt":"-"} · Lembur: {formatDuration(a.overtime)}</div></div>)}{!filtered.length&&<div className="p-10 text-center text-sm text-slate-400">Tidak ada data untuk filter ini. Impor file Excel untuk memuat absensi.</div>}</div>
     </Card>
 
     <div className="mt-3 flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
@@ -1068,6 +1070,6 @@ function Reports({attendance}:{attendance:Attendance[]}){const totalLate=attenda
 
 function OvertimeLate({attendance}:{attendance:Attendance[]}){const late=useMemo(()=>attendance.filter(a=>a.late>0),[attendance]);const over=useMemo(()=>attendance.filter(a=>a.overtime>0),[attendance]);return <Page><div className="mb-5"><h2 className="text-xl font-bold text-slate-900 dark:text-white">Lembur & Telat</h2><p className="text-sm text-slate-500">Pantau keterlambatan dan durasi lembur dari data Excel.</p></div><div className="grid lg:grid-cols-2 gap-5"><Card className="overflow-hidden"><div className="p-5 border-b border-slate-100 dark:border-slate-800"><h3 className="font-bold text-orange-600">Keterlambatan</h3><p className="text-xs text-slate-500">{late.length} record terlambat</p></div><div className="overflow-x-auto"><table className="w-full"><thead className="bg-slate-50 dark:bg-slate-800/60 text-xs text-slate-500"><tr><th className="p-4 text-left">Nama</th><th className="text-left">Tanggal</th><th className="text-left">Telat</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{late.map(a=><tr key={a.key} className="text-sm"><td className="p-4 font-semibold text-slate-900 dark:text-white">{a.name}</td><td>{a.date}</td><td className="font-bold text-orange-600">{a.late} menit</td></tr>)}{!late.length&&<tr><td colSpan={3} className="p-8 text-center text-slate-400">Tidak ada data telat.</td></tr>}</tbody></table></div></Card><Card className="overflow-hidden"><div className="p-5 border-b border-slate-100 dark:border-slate-800"><h3 className="font-bold text-purple-600">Lembur</h3><p className="text-xs text-slate-500">{over.length} record lembur</p></div><div className="overflow-x-auto"><table className="w-full"><thead className="bg-slate-50 dark:bg-slate-800/60 text-xs text-slate-500"><tr><th className="p-4 text-left">Nama</th><th className="text-left">Tanggal</th><th className="text-left">Lembur</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{over.map(a=><tr key={a.key} className="text-sm"><td className="p-4 font-semibold text-slate-900 dark:text-white">{a.name}</td><td>{a.date}</td><td className="font-bold text-purple-600">{formatDuration(a.overtime)}</td></tr>)}{!over.length&&<tr><td colSpan={3} className="p-8 text-center text-slate-400">Tidak ada data lembur.</td></tr>}</tbody></table></div></Card></div></Page>}
 
-function Settings({dark,toggle}:{dark:boolean;toggle:()=>void}){return <Page><div className="mb-5"><h2 className="text-xl font-bold text-slate-900 dark:text-white">Pengaturan</h2><p className="text-sm text-slate-500">Atur tampilan dashboard.</p></div><Card className="p-5 max-w-2xl"><div className="flex items-center justify-between py-3"><div><div className="font-semibold text-slate-900 dark:text-white">Tema Tampilan</div><div className="text-sm text-slate-500">Pilih Light Mode atau Dark Mode.</div></div><button onClick={toggle} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-semibold text-sm">{dark?<Icons.Sun className="w-4"/>:<Icons.Moon className="w-4"/>}{dark?'Light Mode':'Dark Mode'}</button></div></Card></Page>}
+function SyncPanel({employees,attendance,setEmployees,setAttendance}:{employees:Employee[];attendance:Attendance[];setEmployees:(v:Employee[])=>void;setAttendance:(v:Attendance[])=>void}){const [code,setCode]=useState('');const [msg,setMsg]=useState('');const doExport=()=>{downloadJson('absenpro-backup-'+new Date().toISOString().slice(0,10)+'.json',buildPayload(employees,attendance));setMsg('File backup diunduh. Pindahkan ke perangkat lain lalu impor.');};const doCopyCode=async()=>{try{await navigator.clipboard.writeText(encodeShareCode(buildPayload(employees,attendance)));setMsg('Kode sinkron disalin. Tempel di perangkat lain.');}catch{setMsg('Gagal menyalin.');}};const doImportFile=async(e:React.ChangeEvent<HTMLInputElement>)=>{const f=e.target.files?.[0];if(!f) return;try{const obj=JSON.parse(await f.text());const inc=obj.attendance||[];const emp=obj.employees||[];setAttendance(mergeByKey(attendance,inc,(r:any)=>stableRecordKey(r.employeeId,r.date,r.shift||'',r.checkIn,r.checkOut)+'::'+String(r.sheet||'').toLowerCase()));setEmployees(mergeByKey(employees,emp,(r:any)=>String(r.id).toUpperCase()));setMsg('Backup digabung: '+inc.length+' absensi, '+emp.length+' karyawan. Data kini sama di perangkat ini.');}catch{setMsg('File backup tidak valid.');}e.target.value='';};const doApplyCode=()=>{try{const obj=decodeShareCode(code);setAttendance(mergeByKey(attendance,obj.attendance,(r:any)=>stableRecordKey(r.employeeId,r.date,r.shift||'',r.checkIn,r.checkOut)+'::'+String(r.sheet||'').toLowerCase()));setEmployees(mergeByKey(employees,obj.employees,(r:any)=>String(r.id).toUpperCase()));setMsg('Kode diterapkan. Data digabung ('+obj.attendance.length+' absensi).');}catch{setMsg('Kode sinkron tidak valid.');}};return <Card className="p-5 max-w-2xl mt-4"><div className="font-bold text-slate-900 dark:text-white">Sinkronisasi HP &harr; Laptop</div><p className="text-sm text-slate-500 mt-1">Data tersimpan di perangkat masing-masing. Agar sama, ekspor dari satu perangkat lalu impor di perangkat lain (file JSON atau kode).</p><div className="flex flex-wrap gap-2 mt-3"><button onClick={doExport} className="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold">Unduh Backup (JSON)</button><label className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm font-semibold cursor-pointer">Impor Backup<input type="file" accept=".json" className="sr-only" onChange={doImportFile}/></label><button onClick={doCopyCode} className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm font-semibold">Salin Kode Sinkron</button></div><textarea value={code} onChange={e=>setCode(e.target.value)} placeholder="Tempel kode sinkron dari perangkat lain di sini..." className="mt-3 w-full h-20 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs"/><button onClick={doApplyCode} className="mt-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold">Gabungkan Kode Ini</button>{msg&&<div className="mt-2 text-sm text-slate-600 dark:text-slate-300">{msg}</div>}</Card>;}function Settings({dark,toggle,employees,attendance,setEmployees,setAttendance}:{dark:boolean;toggle:()=>void;employees:Employee[];attendance:Attendance[];setEmployees:(v:Employee[])=>void;setAttendance:(v:Attendance[])=>void}){return <Page><div className="mb-5"><h2 className="text-xl font-bold text-slate-900 dark:text-white">Pengaturan</h2><p className="text-sm text-slate-500">Atur tampilan dashboard.</p></div><Card className="p-5 max-w-2xl"><div className="flex items-center justify-between py-3"><div><div className="font-semibold text-slate-900 dark:text-white">Tema Tampilan</div><div className="text-sm text-slate-500">Pilih Light Mode atau Dark Mode.</div></div><button onClick={toggle} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-semibold text-sm">{dark?<Icons.Sun className="w-4"/>:<Icons.Moon className="w-4"/>}{dark?'Light Mode':'Dark Mode'}</button></div></Card><SyncPanel employees={employees} attendance={attendance} setEmployees={setEmployees} setAttendance={setAttendance}/></Page>}
 
-export default function App(){const [loggedIn,setLoggedIn]=useState(false);const [screen,setScreen]=useState<Screen>('dashboard');const [employees,setEmployees]=useState<Employee[]>(()=>{try{const s=localStorage.getItem('absenpro-employees');return s?JSON.parse(s):mockEmployees;}catch{return mockEmployees;}});const [attendance,setAttendance]=useState<Attendance[]>(()=>{try{const s=localStorage.getItem('absenpro-attendance');return s?JSON.parse(s):mockAttendance;}catch{return mockAttendance;}});const [menu,setMenu]=useState(false);const [dark,setDark]=useState<boolean>(()=>{if(typeof window==='undefined') return false;try{return localStorage.getItem('absenpro-theme')==='dark';}catch{return false;}});useEffect(()=>{const root=document.documentElement;root.classList.toggle('dark',dark);root.style.colorScheme=dark?'dark':'light';try{localStorage.setItem('absenpro-theme',dark?'dark':'light');}catch{}},[dark]);useEffect(()=>{try{localStorage.setItem('absenpro-employees',JSON.stringify(employees));}catch{}},[employees]);useEffect(()=>{try{localStorage.setItem('absenpro-attendance',JSON.stringify(attendance));}catch{}},[attendance]);const toggle=()=>setDark(value=>!value);if(!loggedIn)return <Login onLogin={()=>setLoggedIn(true)}/>;const logout=()=>{setLoggedIn(false);setScreen('dashboard')};return <div className="min-h-screen bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200"><div className="flex min-h-screen"><Sidebar screen={screen} go={setScreen} logout={logout} open={menu} setOpen={setMenu} dark={dark} toggle={toggle}/><div className="flex-1 min-w-0"><Header screen={screen} menu={()=>setMenu(true)} dark={dark} toggle={toggle}/>{screen==='dashboard'&&<Dashboard employees={employees} attendance={attendance} go={setScreen}/>} {screen==='employees'&&<Employees employees={employees} setEmployees={setEmployees} attendance={attendance} setAttendance={setAttendance}/>} {screen==='attendance'&&<AttendancePage attendance={attendance} setAttendance={setAttendance} setEmployees={setEmployees}/>} {screen==='reports'&&<Reports attendance={attendance}/>} {screen==='overtime'&&<OvertimeLate attendance={attendance}/>} {screen==='print'&&<PrintRekap employees={employees} attendance={attendance}/>} {screen==='settings'&&<Settings dark={dark} toggle={toggle}/>}</div></div></div>}
+export default function App(){const [loggedIn,setLoggedIn]=useState(false);const [screen,setScreen]=useState<Screen>('dashboard');const [employees,setEmployees]=useState<Employee[]>(()=>{try{const s=localStorage.getItem('absenpro-employees');return s?JSON.parse(s):mockEmployees;}catch{return mockEmployees;}});const [attendance,setAttendance]=useState<Attendance[]>(()=>{try{const s=localStorage.getItem('absenpro-attendance');return s?JSON.parse(s):mockAttendance;}catch{return mockAttendance;}});const [menu,setMenu]=useState(false);const [dark,setDark]=useState<boolean>(()=>{if(typeof window==='undefined') return false;try{return localStorage.getItem('absenpro-theme')==='dark';}catch{return false;}});useEffect(()=>{const root=document.documentElement;root.classList.toggle('dark',dark);root.style.colorScheme=dark?'dark':'light';try{localStorage.setItem('absenpro-theme',dark?'dark':'light');}catch{}},[dark]);useEffect(()=>{try{localStorage.setItem('absenpro-employees',JSON.stringify(employees));}catch{}},[employees]);useEffect(()=>{try{localStorage.setItem('absenpro-attendance',JSON.stringify(attendance));}catch{}},[attendance]);useEffect(()=>{const onSync=(e:StorageEvent)=>{try{if(e.key==='absenpro-employees'&&e.newValue)setEmployees(JSON.parse(e.newValue));if(e.key==='absenpro-attendance'&&e.newValue)setAttendance(JSON.parse(e.newValue));}catch{}};window.addEventListener('storage',onSync);return ()=>window.removeEventListener('storage',onSync);},[]);const toggle=()=>setDark(value=>!value);if(!loggedIn)return <Login onLogin={()=>setLoggedIn(true)}/>;const logout=()=>{setLoggedIn(false);setScreen('dashboard')};return <div className="min-h-screen bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200"><div className="flex min-h-screen"><Sidebar screen={screen} go={setScreen} logout={logout} open={menu} setOpen={setMenu} dark={dark} toggle={toggle}/><div className="flex-1 min-w-0"><Header screen={screen} menu={()=>setMenu(true)} dark={dark} toggle={toggle}/>{screen==='dashboard'&&<Dashboard employees={employees} attendance={attendance} go={setScreen}/>} {screen==='employees'&&<Employees employees={employees} setEmployees={setEmployees} attendance={attendance} setAttendance={setAttendance}/>} {screen==='attendance'&&<AttendancePage attendance={attendance} setAttendance={setAttendance} setEmployees={setEmployees}/>} {screen==='reports'&&<Reports attendance={attendance}/>} {screen==='overtime'&&<OvertimeLate attendance={attendance}/>} {screen==='print'&&<PrintRekap employees={employees} attendance={attendance}/>} {screen==='settings'&&<Settings dark={dark} toggle={toggle} employees={employees} attendance={attendance} setEmployees={setEmployees} setAttendance={setAttendance}/>}</div></div></div>}
